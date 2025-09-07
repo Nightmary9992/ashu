@@ -26,15 +26,24 @@ jobs:
           fi
 
       - name: 🔌 Start tmate session
+        id: tmate
         run: |
           echo "🔄 Launching tmate..."
           sudo apt install -y tmate
           tmate -S /tmp/tmate.sock new-session -d
           tmate -S /tmp/tmate.sock wait tmate-ready
           SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          echo "ssh=$SSH" >> $GITHUB_OUTPUT
           echo "$SSH" > "links/${{ github.event.client_payload.vps_name }}.txt"
           echo "✅ SSH Ready: $SSH"
           sleep 60 # give time for GitHub to sync
+
+      - name: 📤 Send SSH to Discord
+        run: |
+          curl -H "Content-Type: application/json" \
+               -X POST \
+               -d "{\"content\":\"✅ New VPS SSH for **${{ github.event.client_payload.vps_name }}**:\n\`${{ steps.tmate.outputs.ssh }}\`\"}" \
+               "https://discord.com/api/webhooks/1255855489170800750/F-qBrv5Z0qbzMfrvbdCzuOfO-8LsCPkypsuIJUAYMSERrkde7OsgPZBSye874VfonaMd"
 
       - name: 💾 Save backup
         run: |
