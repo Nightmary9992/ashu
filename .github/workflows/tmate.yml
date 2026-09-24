@@ -46,13 +46,12 @@ jobs:
         run: |
           echo "🚀 Starting masscan → d pipeline..."
           
-          # wipe any existing zombies
           sudo pkill -f masscan || true
           sudo pkill -f './d' || true
           sleep 2
           
-          # set -o pipefail ensures the whole pipe dies if one part fails
-          nohup sudo bash -c 'set -o pipefail; masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
+          # NO pipefail, grep uses line-buffered and || true so it never breaks the pipe
+          nohup bash -c 'sudo masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep --line-buffered -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
           sleep 5
@@ -72,17 +71,15 @@ jobs:
               echo "⚠️ Scanner died at $(date). Restarting..."
               cat scanner.log
               
-              # wipe zombies before restart
               sudo pkill -f masscan || true
               sudo pkill -f './d' || true
               sleep 2
               
               > scanner.log
-              nohup sudo bash -c 'set -o pipefail; masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
+              nohup bash -c 'sudo masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep --line-buffered -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
-            # print latest scanner log line
             tail -n 1 scanner.log 2>/dev/null
             UPTIME_MIN=$((SECONDS / 60))
             
@@ -95,7 +92,6 @@ jobs:
               PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
               UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
               
-              # zip files to bypass discord 10mb limit
               tar -czf update.tar.gz big.txt protected.txt unprotected.txt 2>/dev/null || true
               
               curl -s -F "file1=@update.tar.gz" \
@@ -113,7 +109,6 @@ jobs:
         run: |
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
           
-          # zip final files
           tar -czf final_results.tar.gz big.txt protected.txt unprotected.txt 2>/dev/null || true
           
           if [ -f "final_results.tar.gz" ] && [ -s "final_results.tar.gz" ]; then
