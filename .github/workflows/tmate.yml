@@ -48,7 +48,8 @@ jobs:
           
           # masscan needs sudo for raw sockets
           # grep extracts just the IP so it pipes cleanly into d
-          nohup sudo bash -c 'masscan -p 9100 --rate 100000 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
+          # --exclude 255.255.255.255 is required by masscan to scan 0.0.0.0/0
+          nohup sudo bash -c 'masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
           sleep 5
@@ -68,7 +69,7 @@ jobs:
               echo "⚠️ Scanner died at $(date). Restarting..."
               cat scanner.log
               > scanner.log
-              nohup sudo bash -c 'masscan -p 9100 --rate 100000 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
+              nohup sudo bash -c 'masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
