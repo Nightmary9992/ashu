@@ -25,28 +25,39 @@ jobs:
             unzip ".backup/$name.zip" -d . || echo "⚠️ No backup to restore."
           fi
 
-      - name: 🔌 Start tmate session
+      - name: 🔌 Install deps & Start tmate
         id: tmate
         run: |
-          echo "🔄 Launching tmate..."
-          sudo apt update -qq && sudo apt install -y -qq tmate zmap golang-go
+          sudo apt update -qq && sudo apt install -y -qq zmap golang-go tmate
           
           ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N "" -q
           
-          tmate -S /tmp/tmate.sock new-session -d
-          
-          timeout 120 bash -c 'tmate -S /tmp/tmate.sock wait tmate-ready' || {
-            echo "⚠️ tmate relay slow, retrying..."
+          # 3 attempts to start tmate
+          for i in 1 2 3; do
+            echo "🔄 tmate attempt $i..."
+            rm -f /tmp/tmate.sock
+            tmate -S /tmp/tmate.sock new-session -d
+            
+            # hard 60s timeout per attempt
+            for j in $(seq 1 60); do
+              if tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null; then
+                break 2
+              fi
+              sleep 1
+            done
+            
+            echo "⚠️ Attempt $i failed, killing..."
             tmate -S /tmp/tmate.sock kill-server 2>/dev/null
             sleep 5
-            tmate -S /tmp/tmate.sock new-session -d
-            timeout 120 bash -c 'tmate -S /tmp/tmate.sock wait tmate-ready' || {
-              echo "❌ tmate failed to start after retry"
-              exit 1
-            }
-          }
+          done
           
-          SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null)
+          
+          if [ -z "$SSH" ]; then
+            echo "❌ tmate failed after 3 attempts"
+            exit 1
+          fi
+          
           echo "ssh=$SSH" >> $GITHUB_OUTPUT
           echo "$SSH" > "links/${{ github.event.client_payload.vps_name }}.txt"
           echo "✅ SSH Ready: $SSH"
